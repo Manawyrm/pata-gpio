@@ -25,7 +25,7 @@ struct pata_gpio {
 static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 {
 	int err; 
-	unsigned long cs_state = 0b10;
+	unsigned long cs_state = 0b01;
 
 	err = gpiod_set_array_value_cansleep(pata->cs_gpios->ndescs,
 										 pata->cs_gpios->desc,
@@ -44,7 +44,7 @@ static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
 {
 	u8 i;
 	int err; 
-	unsigned long value;
+	unsigned long value = 0;
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
@@ -148,50 +148,59 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	if (!pata)
 		return -ENOMEM;
 
-	err = claim_gpios(&pata->led_gpios, 4, "led", 0, dev);
+	err = claim_gpios(&pata->led_gpios, 4, "led", GPIOD_OUT_LOW, dev);
 	if (err) {
 		dev_err(dev, "Failed to request led gpios: %d\n", err);
 		return err;
 	}
 
-	err = claim_gpios(&pata->databus_gpios, 16, "databus", 0, dev);
+	err = claim_gpios(&pata->databus_gpios, 16, "databus", GPIOD_IN, dev);
 	if (err) {
 		dev_err(dev, "Failed to request databus gpios: %d\n", err);
 		return err;
 	}
 
-	err = claim_gpios(&pata->cs_gpios, 2, "cs", 0, dev);
+	err = claim_gpios(&pata->cs_gpios, 2, "cs", GPIOD_OUT_LOW, dev);
 	if (err) {
 		dev_err(dev, "Failed to request cs gpios: %d\n", err);
 		return err;
 	}
 
-	err = claim_gpios(&pata->address_gpios, 3, "address", 0, dev);
+	err = claim_gpios(&pata->address_gpios, 3, "address", GPIOD_OUT_LOW, dev);
 	if (err) {
 		dev_err(dev, "Failed to request address gpios: %d\n", err);
 		return err;
 	}
 
-	pata->reset_gpio = devm_gpiod_get(dev, "reset", 0);
+	pata->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
 	if (!pata->reset_gpio)
 		return -ENOMEM;
 
 	if (IS_ERR(pata->reset_gpio))
 		return PTR_ERR(pata->reset_gpio);
 
-	pata->strobe_read_gpio = devm_gpiod_get(dev, "strobe-read", 0);
+	pata->strobe_read_gpio = devm_gpiod_get(dev, "strobe-read", GPIOD_OUT_LOW);
 	if (!pata->strobe_read_gpio)
 		return -ENOMEM;
 
 	if (IS_ERR(pata->strobe_read_gpio)) 
 		return PTR_ERR(pata->strobe_read_gpio);
 
-	pata->strobe_write_gpio = devm_gpiod_get(dev, "strobe-write", 0);
+	pata->strobe_write_gpio = devm_gpiod_get(dev, "strobe-write", GPIOD_OUT_LOW);
 	if (!pata->strobe_write_gpio) 
 		return -ENOMEM;
 	
 	if (IS_ERR(pata->strobe_write_gpio))
 		return PTR_ERR(pata->strobe_write_gpio);
+
+
+	// reset
+	gpiod_set_value_cansleep(pata->reset_gpio, 1);
+	usleep_range(10, 1000); 
+	gpiod_set_value_cansleep(pata->reset_gpio, 0);
+	usleep_range(10, 1000); 
+
+	usleep_range(1000000, 1000000); 
 
 
 /*
