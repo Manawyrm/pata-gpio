@@ -10,6 +10,23 @@
 #include <linux/printk.h>
 #include <scsi/scsi_host.h>
 
+// CS0 High / CS1 Low
+#define REG_CMD		
+#define REG_DATA		0x00
+#define REG_ERROR		0x01
+#define REG_FEATURE		0x01
+#define REG_NSECT		0x02
+#define REG_LBAL		0x03
+#define REG_LBAM		0x04
+#define REG_LBAH		0x05
+#define REG_DEVICE		0x06
+#define REG_STATUS		0x07
+#define REG_COMMAND		0x07
+
+// CS1 High / CS0 Low
+#define REG_ALTSTATUS	0x10
+#define REG_CTL			0x10
+
 struct pata_gpio {
 	struct gpio_descs *led_gpios;
 	struct gpio_descs *databus_gpios;
@@ -24,6 +41,9 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 {
 	int err; 
 	unsigned long cs_state = 0b01;
+
+	if (reg & 0xF0)
+		cs_state = 0b10;
 
 	err = gpiod_set_array_value_cansleep(pata->cs_gpios->ndescs,
 										 pata->cs_gpios->desc,
@@ -99,68 +119,120 @@ static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value
 	return 0; 
 }
 
-#define SECTOR_SIZE 512
-#define CF_BASE_REG 0
-#define CF_DATA     CF_BASE_REG + 0 // IDE Data Port
-#define CF_ERROR    CF_BASE_REG + 1 // Error code (read)
-#define CF_FEATURE  CF_BASE_REG + 1 // Feature (write)
-#define CF_NUMSECT  CF_BASE_REG + 2 // Numbers of sectors to transfer
-#define CF_ADDR0    CF_BASE_REG + 3 // Sector address LBA 0 (0:7)
-#define CF_ADDR1    CF_BASE_REG + 4 // Sector address LBA 1 (8:15)
-#define CF_ADDR2    CF_BASE_REG + 5 // Sector address LBA 2 (16:23)
-#define CF_ADDR3    CF_BASE_REG + 6 // Sector address LBA 3 (24:27)
-#define CF_STATUS   CF_BASE_REG + 7 // Status (read)
-#define CF_COMMAND  CF_BASE_REG + 7 // Command (write)
-#define CF_ADDR3_ADDITIONAL 0xE0 // Drive 0 aka Master, LBA addressing, bit 5 and 7 at 1 (as per standard)
-
-int cf_identify(struct pata_gpio *pata, u8* data)
+static void pata_gpio_write16_safe(struct pata_gpio *pata, u8 reg, unsigned long value)
 {
-	/*
-		https://wiki.osdev.org/ATA_PIO_Mode:
-		To use the IDENTIFY command, select a target drive by sending 0xA0 for the master drive, or 0xB0 for the slave, 
-		to the "drive select" IO port. On the Primary bus, this would be port 0x1F6. Then set the Sectorcount, LBAlo, LBAmid, 
-		and LBAhi IO ports to 0 (port 0x1F2 to 0x1F5). Then send the IDENTIFY command (0xEC) to the Command IO port (0x1F7). 
-		Then read the Status port (0x1F7) again. If the value read is 0, the drive does not exist. For any other value: 
-		poll the Status port (0x1F7) until bit 7 (BSY, value = 0x80) clears. Because of some ATAPI drives that do not follow spec, 
-		at this point you need to check the LBAmid and LBAhi ports (0x1F4 and 0x1F5) to see if they are non-zero. 
-		If so, the drive is not ATA, and you should stop polling. 
-		Otherwise, continue polling one of the Status ports until bit 3 (DRQ, value = 8) sets, or until bit 0 (ERR, value = 1) sets.
-		At that point, if ERR is clear, the data is ready to read from the Data port (0x1F0). Read 256 16-bit values, and store them.
-	*/
-
-	int i; 
-	u16 result; 
+	int err; 
 	
-	pata_gpio_write16(pata, CF_ADDR3, 0xA0);
-
-	pata_gpio_write16(pata, CF_NUMSECT, 0x00);
-	pata_gpio_write16(pata, CF_ADDR0, 0x00);
-	pata_gpio_write16(pata, CF_ADDR1, 0x00);
-	pata_gpio_write16(pata, CF_ADDR2, 0x00);
-
-	pata_gpio_write16(pata, CF_COMMAND, 0xEC);
-
-	pata_gpio_read16(pata, CF_STATUS, &result);
-	if (result != 0x00)
-	{
-		usleep_range(1000000, 1000000);
-
-		for (i = 0; i < SECTOR_SIZE; i+=2)
-		{
-			pata_gpio_read16(pata, CF_DATA, &result);
-			*data++ = (result >> 8) & 0xFF;  
-			*data++ = result & 0xFF;
-		}
-
-		return 1;
-	}
-	else
-	{
-		//printf("No device detected!\n");
-		return 0; 
+	err = pata_gpio_write16(pata, reg, value);
+	if (err) {
+		dev_err(ap->dev, "failed to write gpios in %s, code %d\n", __func__, err);
+		BUG();
 	}
 }
 
+static u16 pata_gpio_read16_safe(struct pata_gpio *pata, u8 reg)
+{
+	u16 result; 
+	int err; 
+
+	err = pata_gpio_read16(pata, reg, &result);
+	if (err)
+	{
+		dev_err(ap->dev, "failed to read gpios in %s, code %d\n", __func__, err);
+		BUG();
+	}
+
+	return result;
+}
+
+/*
+ * pata_gpio_check_status - Read device status register
+ */
+static u8 pata_gpio_check_status(struct ata_port *ap)
+{
+	return pata_gpio_read16_safe(ap->host->private_data, REG_STATUS) & 0xFF;
+}
+
+/*
+ * pata_gpio_check_altstatus - Read alternate device status register
+ */
+static u8 pata_gpio_check_altstatus(struct ata_port *ap)
+{
+	return pata_gpio_read16_safe(ap->host->private_data, REG_ALTSTATUS) & 0xFF;
+}
+
+/*
+ * pata_gpio_exec_command - issue ATA command to host controller
+ */
+static void pata_gpio_exec_command(struct ata_port *ap,
+				const struct ata_taskfile *tf)
+{
+	pata_gpio_write16_safe(ap->host->private_data, REG_COMMAND, tf->command);
+	ata_sff_pause(ap);
+}
+
+/*
+ * pata_gpio_tf_load - send taskfile registers to host controller
+ */
+static void pata_gpio_tf_load(struct ata_port *ap,
+				const struct ata_taskfile *tf)
+{
+	unsigned int is_addr = tf->flags & ATA_TFLAG_ISADDR;
+
+	if (tf->ctl != ap->last_ctl) {
+		pata_gpio_write16_safe(ap->host->private_data, REG_CTL, tf->ctl);
+		ap->last_ctl = tf->ctl;
+		ata_wait_idle(ap);
+	}
+
+	if (is_addr && (tf->flags & ATA_TFLAG_LBA48)) {
+		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->hob_feature);
+		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->hob_nsect);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->hob_lbal);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->hob_lbam);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->hob_lbah);
+	}
+
+	if (is_addr) {
+		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->feature_addr);
+		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->nsect_addr);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->lbal_addr);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->lbam_addr);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->lbah_addr);
+	}
+
+	if (tf->flags & ATA_TFLAG_DEVICE)
+		pata_gpio_write16_safe(ap->host->private_data, REG_DEVICE, tf->device);
+
+	ata_wait_idle(ap);
+}
+
+/*
+ * pata_gpio_tf_read - input device's ATA taskfile shadow registers
+ */
+static void pata_gpio_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
+{
+
+	tf->feature = pata_gpio_read16_safe(ap->host->private_data, REG_FEATURE);
+	tf->nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
+	tf->lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
+	tf->lbam = pata_gpio_read16_safe(ap->host->private_data, REG_LBAM);
+	tf->lbah = pata_gpio_read16_safe(ap->host->private_data, REG_LBAH);
+	tf->device = pata_gpio_read16_safe(ap->host->private_data, REG_DEVICE);
+
+	if (tf->flags & ATA_TFLAG_LBA48) {
+		pata_gpio_write16_safe(ap->host->private_data, REG_CTL, tf->ctl | ATA_HOB);
+
+		tf->hob_feature = pata_gpio_read16_safe(ap->host->private_data, REG_FEATURE);
+		tf->hob_nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
+		tf->hob_lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
+		tf->hob_lbam = pata_gpio_read16_safe(ap->host->private_data, REG_LBAM);
+		tf->hob_lbah = pata_gpio_read16_safe(ap->host->private_data, REG_LBAH);
+
+		pata_gpio_write16_safe(ap->host->private_data, REG_CTL, tf->ctl);
+		ap->last_ctl = tf->ctl;
+	}
+}
 
 // static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 // 			 unsigned long deadline)
@@ -196,19 +268,19 @@ int cf_identify(struct pata_gpio *pata, u8* data)
 // 	ATA_PIO_SHT("pata-gpio"),
 // };
 
-// static struct ata_port_operations pata_gpio_port_ops = {
-// 	.inherits				= &ata_sff_port_ops,
-// 	.sff_check_status		= pata_gpio_check_status,
-// 	.sff_check_altstatus	= pata_gpio_check_altstatus,
-// 	.sff_tf_load			= pata_gpio_tf_load,
-// 	.sff_tf_read			= pata_gpio_tf_read,
+static struct ata_port_operations pata_gpio_port_ops = {
+ 	.inherits				= &ata_sff_port_ops,
+ 	.sff_check_status		= pata_gpio_check_status,
+ 	.sff_check_altstatus	= pata_gpio_check_altstatus,
+ 	.sff_tf_load			= pata_gpio_tf_load,
+ 	.sff_tf_read			= pata_gpio_tf_read,
 // 	.sff_data_xfer			= pata_gpio_data_xfer,
-// 	.sff_exec_command		= pata_gpio_exec_command,
+ 	.sff_exec_command		= pata_gpio_exec_command,
 // 	.sff_dev_select			= pata_gpio_dev_select,
 // 	.sff_set_devctl			= pata_gpio_set_devctl,
 // 	.softreset				= pata_gpio_softreset,
 // 	.set_piomode 			= pata_gpio_set_piomode,
-// };
+ };
 
 static int claim_gpios(struct gpio_descs **target, unsigned count, const char *name, enum gpiod_flags flags, struct device *dev)
 {
@@ -313,7 +385,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	ap->pio_mask = ATA_PIO0;
 	ap->flags |= ATA_FLAG_PIO_POLLING; */
 
-	for (i = 0; i < 8; ++i)
+/*	for (i = 0; i < 8; ++i)
 	{
 		u16 result;
 		if (pata_gpio_read16(pata, i, &result))	{
@@ -329,7 +401,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	print_hex_dump(KERN_INFO, "identify: ", DUMP_PREFIX_NONE,
 		    16, 2,
 		    data, 512, 1);
-
+*/
 	//return ata_host_activate(host, -1, null, 0, &pata_gpio_sht);
 	return 0;
 }
