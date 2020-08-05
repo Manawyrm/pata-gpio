@@ -10,6 +10,9 @@
 #include <linux/printk.h>
 #include <scsi/scsi_host.h>
 
+#undef BUG
+#define BUG() WARN(1, "error")
+
 // CS0 High / CS1 Low
 #define REG_CMD		
 #define REG_DATA		0x00
@@ -28,6 +31,7 @@
 #define REG_CTL			0x10
 
 struct pata_gpio {
+	struct device *dev;
 	struct gpio_descs *led_gpios;
 	struct gpio_descs *databus_gpios;
 	struct gpio_desc *reset_gpio;
@@ -125,7 +129,7 @@ static void pata_gpio_write16_safe(struct pata_gpio *pata, u8 reg, unsigned long
 	
 	err = pata_gpio_write16(pata, reg, value);
 	if (err) {
-		dev_err(ap->dev, "failed to write gpios in %s, code %d\n", __func__, err);
+		dev_err(pata->dev, "failed to write gpios in %s, code %d\n", __func__, err);
 		BUG();
 	}
 }
@@ -138,7 +142,7 @@ static u16 pata_gpio_read16_safe(struct pata_gpio *pata, u8 reg)
 	err = pata_gpio_read16(pata, reg, &result);
 	if (err)
 	{
-		dev_err(ap->dev, "failed to read gpios in %s, code %d\n", __func__, err);
+		dev_err(pata->dev, "failed to read gpios in %s, code %d\n", __func__, err);
 		BUG();
 	}
 
@@ -194,11 +198,11 @@ static void pata_gpio_tf_load(struct ata_port *ap,
 	}
 
 	if (is_addr) {
-		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->feature_addr);
-		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->nsect_addr);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->lbal_addr);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->lbam_addr);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->lbah_addr);
+		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->feature);
+		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->nsect);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->lbal);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->lbam);
+		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->lbah);
 	}
 
 	if (tf->flags & ATA_TFLAG_DEVICE)
@@ -234,39 +238,165 @@ static void pata_gpio_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
 	}
 }
 
-// static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
-// 			 unsigned long deadline)
-// {
-// 	struct ata_port *ap = link->ap;
-// 	unsigned int devmask = 0;
-// 	int rc;
-// 	u8 err;
+/*
+ * pata_gpio_data_xfer - Transfer data by PIO
+ */
+static unsigned int pata_gpio_data_xfer(struct ata_queued_cmd *qc,
+				unsigned char *buf, unsigned int buflen, int rw)
+{
+	unsigned int i;
+	unsigned int words = buflen >> 1;
+	struct ata_port *ap = qc->dev->link->ap;
+	u16 *buf16 = (u16 *) buf;
 
-// 	/* determine if device 0 is present */
-// 	if (pata_s3c_devchk(ap, 0))
-// 		devmask |= (1 << 0);
+	/* Transfer multiple of 2 bytes */
+	if (rw == READ)
+		for (i = 0; i < words; i++)
+			buf16[i] = pata_gpio_read16_safe(ap->host->private_data, REG_DATA);
+	else
+		for (i = 0; i < words; i++)
+			pata_gpio_write16_safe(ap->host->private_data, REG_DATA, buf16[i]);
 
-// 	/* select device 0 again */
-// 	pata_s3c_dev_select(ap, 0);
+	/* Transfer trailing 1 byte, if any. */
+	if (unlikely(buflen & 0x01)) {
+		unsigned char *trailing_buf = buf + buflen - 1;
 
-// 	/* issue bus reset */
-// 	rc = pata_s3c_bus_softreset(ap, deadline);
-// 	/* if link is occupied, -ENODEV too is an error */
-// 	if (rc && rc != -ENODEV) {
-// 		ata_link_err(link, "SRST failed (errno=%d)\n", rc);
-// 		return rc;
-// 	}
+		dev_warn(ap->dev, "pata_gpio_data_xfer did uneven length xfer!\n");
 
-// 	/* determine by signature whether we have ATA or ATAPI devices */
-// 	classes[0] = ata_sff_dev_classify(&ap->link.device[0],
-// 					  devmask & (1 << 0), &err);
+		if (rw == READ) {
+			*trailing_buf = pata_gpio_read16_safe(ap->host->private_data, REG_DATA) & 0xFF;
+		} else {
+			pata_gpio_write16_safe(ap->host->private_data, REG_DATA, *trailing_buf);
+		}
+	}
 
-// 	return 0;
-// }
+	return buflen;
+}
 
-// static struct scsi_host_template pata_gpio_sht = {
-// 	ATA_PIO_SHT("pata-gpio"),
-// };
+/*
+ * pata_gpio_set_devctl - Write device control register
+ */
+static void pata_gpio_set_devctl(struct ata_port *ap, u8 ctl)
+{
+	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ctl);
+}
+
+/*
+ * pata_gpio_dev_select - Select device on ATA bus
+ */
+static void pata_gpio_dev_select(struct ata_port *ap, unsigned int device)
+{
+	u8 tmp = ATA_DEVICE_OBS;
+
+	if (device != 0)
+		tmp |= ATA_DEV1;
+
+	pata_gpio_write16_safe(ap->host->private_data, REG_DEVICE, tmp);
+	ata_sff_pause(ap);
+}
+
+/*
+ * pata_gpio_devchk - PATA device presence detection
+ */
+static unsigned int pata_gpio_devchk(struct ata_port *ap,
+				unsigned int device)
+{
+	u8 nsect, lbal;
+
+	pata_gpio_dev_select(ap, device);
+
+	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0x55);
+	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0xAA);
+
+	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0xAA);
+	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0x55);
+
+	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0x55);
+	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0xAA);
+
+	nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
+	lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
+
+	if ((nsect == 0x55) && (lbal == 0xaa))
+		return 1;	/* we found a device */
+
+	return 0;		/* nothing found */
+}
+
+/*
+ * pata_gpio_wait_after_reset - wait for devices to become ready after reset
+ */
+static int pata_gpio_wait_after_reset(struct ata_link *link,
+		unsigned long deadline)
+{
+	int rc;
+
+	ata_msleep(link->ap, ATA_WAIT_AFTER_RESET);
+
+	/* always check readiness of the master device */
+	rc = ata_sff_wait_ready(link, deadline);
+	/* -ENODEV means the odd clown forgot the D7 pulldown resistor
+	 * and TF status is 0xff, bail out on it too.
+	 */
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+/*
+ * pata_gpio_bus_softreset - PATA device software reset
+ */
+static int pata_gpio_bus_softreset(struct ata_port *ap,
+		unsigned long deadline)
+{
+	/* software reset.  causes dev0 to be selected */
+	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl);
+	udelay(20);
+	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl | ATA_SRST);
+	udelay(20);
+	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl);
+	ap->last_ctl = ap->ctl;
+
+	return pata_gpio_wait_after_reset(&ap->link, deadline);
+}
+
+/*
+ * pata_gpio_softreset - reset host port via ATA SRST
+ */
+static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
+			 unsigned long deadline)
+{
+	struct ata_port *ap = link->ap;
+	unsigned int devmask = 0;
+	int rc;
+	u8 err;
+
+	/* determine if device 0 is present */
+	if (pata_gpio_devchk(ap, 0))
+		devmask |= (1 << 0);
+
+	/* select device 0 again */
+	pata_gpio_dev_select(ap, 0);
+
+	/* issue bus reset */
+	rc = pata_gpio_bus_softreset(ap, deadline);
+	/* if link is occupied, -ENODEV too is an error */
+	if (rc && rc != -ENODEV) {
+		ata_link_err(link, "SRST failed (errno=%d)\n", rc);
+		return rc;
+	}
+
+	/* determine by signature whether we have ATA or ATAPI devices */
+	classes[0] = ata_sff_dev_classify(&ap->link.device[0],
+					  devmask & (1 << 0), &err);
+
+	return 0;
+}
+
+static struct scsi_host_template pata_gpio_sht = {
+	ATA_PIO_SHT("pata-gpio"),
+};
 
 static struct ata_port_operations pata_gpio_port_ops = {
  	.inherits				= &ata_sff_port_ops,
@@ -274,12 +404,12 @@ static struct ata_port_operations pata_gpio_port_ops = {
  	.sff_check_altstatus	= pata_gpio_check_altstatus,
  	.sff_tf_load			= pata_gpio_tf_load,
  	.sff_tf_read			= pata_gpio_tf_read,
-// 	.sff_data_xfer			= pata_gpio_data_xfer,
+ 	.sff_data_xfer			= pata_gpio_data_xfer,
  	.sff_exec_command		= pata_gpio_exec_command,
-// 	.sff_dev_select			= pata_gpio_dev_select,
-// 	.sff_set_devctl			= pata_gpio_set_devctl,
-// 	.softreset				= pata_gpio_softreset,
-// 	.set_piomode 			= pata_gpio_set_piomode,
+ 	.sff_dev_select			= pata_gpio_dev_select,
+ 	.sff_set_devctl			= pata_gpio_set_devctl,
+ 	.softreset				= pata_gpio_softreset,
+ 	/* todo: hardreset */ 
  };
 
 static int claim_gpios(struct gpio_descs **target, unsigned count, const char *name, enum gpiod_flags flags, struct device *dev)
@@ -300,16 +430,17 @@ static int claim_gpios(struct gpio_descs **target, unsigned count, const char *n
 
 static int pata_gpio_probe(struct platform_device *pdev)
 {
-	int nb, i, err;
+	int err;
 	struct device *dev = &pdev->dev;
 	struct pata_gpio *pata;
 	struct ata_host *host;
 	struct ata_port *ap;
-	u8 data[512];
 
 	pata = devm_kzalloc(dev, sizeof(struct pata_gpio), GFP_KERNEL);
 	if (!pata)
 		return -ENOMEM;
+
+	pata->dev = dev;
 
 	err = claim_gpios(&pata->led_gpios, 4, "led", GPIOD_OUT_LOW, dev);
 	if (err) {
@@ -372,7 +503,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 
  */ 
 
-	/*host = ata_host_alloc(&pdev->dev, 1);
+	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host) {
 		dev_err(dev, "failed to allocate ide host\n");
 		return -ENOMEM;
@@ -381,9 +512,9 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	host->private_data = pata;
 
 	ap = host->ports[0];
-	ap->ops = &pata_s3c_port_ops;
+	ap->ops = &pata_gpio_port_ops;
 	ap->pio_mask = ATA_PIO0;
-	ap->flags |= ATA_FLAG_PIO_POLLING; */
+	ap->flags |= ATA_FLAG_PIO_POLLING; 
 
 /*	for (i = 0; i < 8; ++i)
 	{
@@ -402,8 +533,8 @@ static int pata_gpio_probe(struct platform_device *pdev)
 		    16, 2,
 		    data, 512, 1);
 */
-	//return ata_host_activate(host, -1, null, 0, &pata_gpio_sht);
-	return 0;
+	return ata_host_activate(host, -1, NULL, 0, &pata_gpio_sht);
+	//return 0;
 }
 
 static const struct of_device_id pata_gpio_dt_ids[] = {
@@ -419,7 +550,7 @@ static struct platform_driver pata_gpio_driver = {
 		.of_match_table = of_match_ptr(pata_gpio_dt_ids),
 	},
 	.probe		= pata_gpio_probe,
-	/*.remove		= ata_platform_remove_one,*/
+	.remove		= ata_platform_remove_one,
 };
 module_platform_driver(pata_gpio_driver);
 
