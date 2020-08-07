@@ -10,9 +10,6 @@
 #include <linux/printk.h>
 #include <scsi/scsi_host.h>
 
-#undef BUG
-#define BUG() WARN(1, "error")
-
 // CS0 High / CS1 Low
 #define REG_CMD		
 #define REG_DATA		0x00
@@ -32,7 +29,6 @@
 
 struct pata_gpio {
 	struct device *dev;
-	struct gpio_descs *led_gpios;
 	struct gpio_descs *databus_gpios;
 	struct gpio_desc *reset_gpio;
 	struct gpio_descs *cs_gpios;
@@ -49,14 +45,14 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 	if (reg & 0xF0)
 		cs_state = 0b10;
 
-	err = gpiod_set_array_value_cansleep(pata->cs_gpios->ndescs,
+	err = gpiod_set_array_value(pata->cs_gpios->ndescs,
 										 pata->cs_gpios->desc,
 										 pata->cs_gpios->info,
 										 &cs_state);
 	if (err)
 		return err; 
 
-	return gpiod_set_array_value_cansleep(pata->address_gpios->ndescs,
+	return gpiod_set_array_value(pata->address_gpios->ndescs,
 										 pata->address_gpios->desc,
 										 pata->address_gpios->info,
 										 &reg);
@@ -78,15 +74,16 @@ static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
 	if (err)
 		return err; 
 
-	gpiod_set_value_cansleep(pata->strobe_read_gpio, 1);
-	usleep_range(1, 100);
+	gpiod_set_value(pata->strobe_read_gpio, 1);
+	//ndelay(1000);
+//	usleep_range(1, 100);
 
-	err = gpiod_get_array_value_cansleep(pata->databus_gpios->ndescs,
+	err = gpiod_get_array_value(pata->databus_gpios->ndescs,
 				   pata->databus_gpios->desc,
 				   pata->databus_gpios->info,
 				   &value);
 
-	gpiod_set_value_cansleep(pata->strobe_read_gpio, 0);
+	gpiod_set_value(pata->strobe_read_gpio, 0);
 
 	if (!err) 
 		*result = value;
@@ -109,10 +106,12 @@ static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value
 			return err; 
 	}
 
-	gpiod_set_value_cansleep(pata->strobe_write_gpio, 1);
-	usleep_range(1, 100);
-	gpiod_set_value_cansleep(pata->strobe_write_gpio, 0);
-	usleep_range(1, 100);
+	gpiod_set_value(pata->strobe_write_gpio, 1);
+	//ndelay(1000);
+	//usleep_range(1, 100);
+	gpiod_set_value(pata->strobe_write_gpio, 0);
+	//ndelay(1000);
+	//usleep_range(1, 100);
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
@@ -298,7 +297,7 @@ static void pata_gpio_dev_select(struct ata_port *ap, unsigned int device)
 /*
  * pata_gpio_devchk - PATA device presence detection
  */
-static unsigned int pata_gpio_devchk(struct ata_port *ap,
+static bool pata_gpio_devchk(struct ata_port *ap,
 				unsigned int device)
 {
 	u8 nsect, lbal;
@@ -317,10 +316,7 @@ static unsigned int pata_gpio_devchk(struct ata_port *ap,
 	nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
 	lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
 
-	if ((nsect == 0x55) && (lbal == 0xaa))
-		return 1;	/* we found a device */
-
-	return 0;		/* nothing found */
+	return ((nsect == 0x55) && (lbal == 0xaa));
 }
 
 /*
@@ -368,16 +364,8 @@ static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 			 unsigned long deadline)
 {
 	struct ata_port *ap = link->ap;
-	unsigned int devmask = 0;
 	int rc;
 	u8 err;
-
-	/* determine if device 0 is present */
-	if (pata_gpio_devchk(ap, 0))
-		devmask |= (1 << 0);
-
-	/* select device 0 again */
-	pata_gpio_dev_select(ap, 0);
 
 	/* issue bus reset */
 	rc = pata_gpio_bus_softreset(ap, deadline);
@@ -388,8 +376,9 @@ static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 	}
 
 	/* determine by signature whether we have ATA or ATAPI devices */
-	classes[0] = ata_sff_dev_classify(&ap->link.device[0],
-					  devmask & (1 << 0), &err);
+	classes[0] = ata_sff_dev_classify(&ap->link.device[0], pata_gpio_devchk(ap, 0), &err);
+	classes[1] = ata_sff_dev_classify(&ap->link.device[1], pata_gpio_devchk(ap, 1), &err);
+	pr_info("softrst, classes[0]=%u [1]=%u\n", classes[0], classes[1]);
 
 	return 0;
 }
@@ -409,7 +398,6 @@ static struct ata_port_operations pata_gpio_port_ops = {
  	.sff_dev_select			= pata_gpio_dev_select,
  	.sff_set_devctl			= pata_gpio_set_devctl,
  	.softreset				= pata_gpio_softreset,
- 	/* todo: hardreset */ 
  };
 
 static int claim_gpios(struct gpio_descs **target, unsigned count, const char *name, enum gpiod_flags flags, struct device *dev)
@@ -442,12 +430,6 @@ static int pata_gpio_probe(struct platform_device *pdev)
 
 	pata->dev = dev;
 
-	err = claim_gpios(&pata->led_gpios, 4, "led", GPIOD_OUT_LOW, dev);
-	if (err) {
-		dev_err(dev, "Failed to request led gpios: %d\n", err);
-		return err;
-	}
-
 	err = claim_gpios(&pata->databus_gpios, 16, "databus", GPIOD_IN, dev);
 	if (err) {
 		dev_err(dev, "Failed to request databus gpios: %d\n", err);
@@ -466,9 +448,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	pata->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
-	if (!pata->reset_gpio)
-		return -ENOMEM;
+	pata->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 
 	if (IS_ERR(pata->reset_gpio))
 		return PTR_ERR(pata->reset_gpio);
@@ -487,21 +467,15 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(pata->strobe_write_gpio))
 		return PTR_ERR(pata->strobe_write_gpio);
 
-
 	// reset
-	gpiod_set_value_cansleep(pata->reset_gpio, 1);
-	usleep_range(10, 1000); 
-	gpiod_set_value_cansleep(pata->reset_gpio, 0);
-	usleep_range(10, 1000); 
+	if (pata->reset_gpio) {
+		gpiod_set_value(pata->reset_gpio, 1);
+		usleep_range(10, 1000); 
+		gpiod_set_value(pata->reset_gpio, 0);
+		usleep_range(10, 1000); 
 
-	usleep_range(1000000, 1000000); 
-
-
-/*
-			gpiod_set_value_cansleep(led, 1);
-						usleep_range(1000000, 10000000); 
-
- */ 
+		usleep_range(1000000, 1000000); 
+	}
 
 	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host) {
@@ -514,27 +488,9 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	ap = host->ports[0];
 	ap->ops = &pata_gpio_port_ops;
 	ap->pio_mask = ATA_PIO0;
-	ap->flags |= ATA_FLAG_PIO_POLLING; 
+	ap->flags |= ATA_FLAG_PIO_POLLING | ATA_FLAG_SLAVE_POSS;
 
-/*	for (i = 0; i < 8; ++i)
-	{
-		u16 result;
-		if (pata_gpio_read16(pata, i, &result))	{
-			dev_err(dev, "failed to read register %d\n", i);
-		} else {
-			dev_info(dev, "register %d: 0x%04X\n", i, result);
-		}
-	}
-
-
-	cf_identify(pata, data);
-
-	print_hex_dump(KERN_INFO, "identify: ", DUMP_PREFIX_NONE,
-		    16, 2,
-		    data, 512, 1);
-*/
-	return ata_host_activate(host, -1, NULL, 0, &pata_gpio_sht);
-	//return 0;
+	return ata_host_activate(host, 0, NULL, 0, &pata_gpio_sht);
 }
 
 static const struct of_device_id pata_gpio_dt_ids[] = {
