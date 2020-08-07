@@ -39,7 +39,7 @@ struct pata_gpio {
 
 static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 {
-	int err; 
+	int err;
 	unsigned long cs_state = 0b01;
 
 	if (reg & 0xF0)
@@ -50,7 +50,7 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 										 pata->cs_gpios->info,
 										 &cs_state);
 	if (err)
-		return err; 
+		return err;
 
 	return gpiod_set_array_value(pata->address_gpios->ndescs,
 										 pata->address_gpios->desc,
@@ -61,22 +61,21 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
 {
 	u8 i;
-	int err; 
+	int err;
 	unsigned long value = 0;
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
 		if (err)
-			return err; 
+			return err;
 	}
 
 	err = pata_gpio_set_register(pata, reg);
 	if (err)
-		return err; 
+		return err;
 
 	gpiod_set_value(pata->strobe_read_gpio, 1);
-	//ndelay(1000);
-//	usleep_range(1, 100);
+	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 
 	err = gpiod_get_array_value(pata->databus_gpios->ndescs,
 				   pata->databus_gpios->desc,
@@ -85,46 +84,44 @@ static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
 
 	gpiod_set_value(pata->strobe_read_gpio, 0);
 
-	if (!err) 
+	if (!err)
 		*result = value;
 
-	return err; 
+	return err;
 }
 
 static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value)
 {
 	u8 i;
-	int err; 
+	int err;
 
 	err = pata_gpio_set_register(pata, reg);
 	if (err)
-		return err; 
+		return err;
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_output(pata->databus_gpios->desc[i], (value >> i) & 0x01);
 		if (err)
-			return err; 
+			return err;
 	}
 
 	gpiod_set_value(pata->strobe_write_gpio, 1);
-	//ndelay(1000);
-	//usleep_range(1, 100);
+	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 	gpiod_set_value(pata->strobe_write_gpio, 0);
-	//ndelay(1000);
-	//usleep_range(1, 100);
+	ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
 		if (err)
-			return err; 
+			return err;
 	}
 
-	return 0; 
+	return 0;
 }
 
 static void pata_gpio_write16_safe(struct pata_gpio *pata, u8 reg, unsigned long value)
 {
-	int err; 
+	int err;
 	
 	err = pata_gpio_write16(pata, reg, value);
 	if (err) {
@@ -135,12 +132,11 @@ static void pata_gpio_write16_safe(struct pata_gpio *pata, u8 reg, unsigned long
 
 static u16 pata_gpio_read16_safe(struct pata_gpio *pata, u8 reg)
 {
-	u16 result; 
-	int err; 
+	u16 result;
+	int err;
 
 	err = pata_gpio_read16(pata, reg, &result);
-	if (err)
-	{
+	if (err) {
 		dev_err(pata->dev, "failed to read gpios in %s, code %d\n", __func__, err);
 		BUG();
 	}
@@ -369,8 +365,7 @@ static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 
 	/* issue bus reset */
 	rc = pata_gpio_bus_softreset(ap, deadline);
-	/* if link is occupied, -ENODEV too is an error */
-	if (rc && rc != -ENODEV) {
+	if (rc && rc != -ENODEV && rc != -EBUSY) {
 		ata_link_err(link, "SRST failed (errno=%d)\n", rc);
 		return rc;
 	}
@@ -378,7 +373,6 @@ static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 	/* determine by signature whether we have ATA or ATAPI devices */
 	classes[0] = ata_sff_dev_classify(&ap->link.device[0], pata_gpio_devchk(ap, 0), &err);
 	classes[1] = ata_sff_dev_classify(&ap->link.device[1], pata_gpio_devchk(ap, 1), &err);
-	pr_info("softrst, classes[0]=%u [1]=%u\n", classes[0], classes[1]);
 
 	return 0;
 }
@@ -402,7 +396,7 @@ static struct ata_port_operations pata_gpio_port_ops = {
 
 static int claim_gpios(struct gpio_descs **target, unsigned count, const char *name, enum gpiod_flags flags, struct device *dev)
 {
-	struct gpio_descs *gpios; 
+	struct gpio_descs *gpios;
 
 	gpios = devm_gpiod_get_array(dev, name, flags);
 	if (!gpios) {
@@ -457,24 +451,22 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	if (!pata->strobe_read_gpio)
 		return -ENOMEM;
 
-	if (IS_ERR(pata->strobe_read_gpio)) 
+	if (IS_ERR(pata->strobe_read_gpio))
 		return PTR_ERR(pata->strobe_read_gpio);
 
 	pata->strobe_write_gpio = devm_gpiod_get(dev, "strobe-write", GPIOD_OUT_LOW);
-	if (!pata->strobe_write_gpio) 
+	if (!pata->strobe_write_gpio)
 		return -ENOMEM;
 	
 	if (IS_ERR(pata->strobe_write_gpio))
 		return PTR_ERR(pata->strobe_write_gpio);
 
-	// reset
+	// hard-reset
 	if (pata->reset_gpio) {
 		gpiod_set_value(pata->reset_gpio, 1);
-		usleep_range(10, 1000); 
+		udelay(20);
 		gpiod_set_value(pata->reset_gpio, 0);
-		usleep_range(10, 1000); 
-
-		usleep_range(1000000, 1000000); 
+		msleep(100);
 	}
 
 	host = ata_host_alloc(&pdev->dev, 1);
