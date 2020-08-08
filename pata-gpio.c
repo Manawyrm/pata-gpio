@@ -11,23 +11,23 @@
 #include <scsi/scsi_host.h>
 
 // CS0 High / CS1 Low
-#define REG_DATA		0x00
-#define REG_ERROR		0x01
-#define REG_FEATURE		0x01
-#define REG_NSECT		0x02
-#define REG_LBAL		0x03
-#define REG_LBAM		0x04
-#define REG_LBAH		0x05
-#define REG_DEVICE		0x06
-#define REG_STATUS		0x07
-#define REG_COMMAND		0x07
+#define REG_DATA	0x00
+#define REG_ERROR	0x01
+#define REG_FEATURE	0x01
+#define REG_NSECT	0x02
+#define REG_LBAL	0x03
+#define REG_LBAM	0x04
+#define REG_LBAH	0x05
+#define REG_DEVICE	0x06
+#define REG_STATUS	0x07
+#define REG_COMMAND	0x07
 
 // CS1 High / CS0 Low
 #define REG_ALTSTATUS	0x10
-#define REG_CTL			0x10
+#define REG_CTL		0x10
 
 // Invalid register cache value
-#define REG_INVALID		0xff
+#define REG_INVALID	0xff
 
 #undef ndelay
 #define ndelay(x)
@@ -56,16 +56,16 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 		cs_state = 0b10;
 
 	err = gpiod_set_array_value(pata->cs_gpios->ndescs,
-										 pata->cs_gpios->desc,
-										 pata->cs_gpios->info,
-										 &cs_state);
+					pata->cs_gpios->desc,
+					pata->cs_gpios->info,
+					&cs_state);
 	if (err)
 		return err;
 
 	err = gpiod_set_array_value(pata->address_gpios->ndescs,
-										 pata->address_gpios->desc,
-										 pata->address_gpios->info,
-										 &reg);
+					pata->address_gpios->desc,
+					pata->address_gpios->info,
+					&reg);
 	if (err)
 		return err;
 
@@ -86,9 +86,9 @@ static int __pata_gpio_read16_no_iocfg(struct pata_gpio *pata, u8 reg, u16 *resu
 	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 
 	err = gpiod_get_array_value(pata->databus_gpios->ndescs,
-				   pata->databus_gpios->desc,
-				   pata->databus_gpios->info,
-				   &value);
+					pata->databus_gpios->desc,
+					pata->databus_gpios->info,
+					&value);
 
 	gpiod_set_value(pata->strobe_read_gpio, 0);
 
@@ -448,17 +448,17 @@ static struct scsi_host_template pata_gpio_sht = {
 };
 
 static struct ata_port_operations pata_gpio_port_ops = {
- 	.inherits				= &ata_sff_port_ops,
- 	.sff_check_status		= pata_gpio_check_status,
- 	.sff_check_altstatus	= pata_gpio_check_altstatus,
- 	.sff_tf_load			= pata_gpio_tf_load,
- 	.sff_tf_read			= pata_gpio_tf_read,
- 	.sff_data_xfer			= pata_gpio_data_xfer,
- 	.sff_exec_command		= pata_gpio_exec_command,
- 	.sff_dev_select			= pata_gpio_dev_select,
- 	.sff_set_devctl			= pata_gpio_set_devctl,
- 	.softreset				= pata_gpio_softreset,
- };
+	.inherits		= &ata_sff_port_ops,
+	.sff_check_status	= pata_gpio_check_status,
+	.sff_check_altstatus	= pata_gpio_check_altstatus,
+	.sff_tf_load		= pata_gpio_tf_load,
+	.sff_tf_read		= pata_gpio_tf_read,
+	.sff_data_xfer		= pata_gpio_data_xfer,
+	.sff_exec_command	= pata_gpio_exec_command,
+	.sff_dev_select		= pata_gpio_dev_select,
+	.sff_set_devctl		= pata_gpio_set_devctl,
+	.softreset		= pata_gpio_softreset,
+};
 
 static int claim_gpios(struct gpio_descs **target, unsigned count, const char *name, enum gpiod_flags flags, struct device *dev)
 {
