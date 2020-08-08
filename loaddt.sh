@@ -1,5 +1,5 @@
 #!/bin/bash
 
-dtoverlay -R atapihat
-dtc -I dts -O dtb /boot/overlays/atapihat.dts > /boot/overlays/atapihat.dtbo
-dtoverlay /boot/overlays/atapihat.dtbo
+dtoverlay -R atapi-direct
+dtc -I dts -O dtb atapi-direct.dts > /boot/overlays/atapi-direct.dtbo
+dtoverlay /boot/overlays/atapi-direct.dtbo
