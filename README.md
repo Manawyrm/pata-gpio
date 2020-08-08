@@ -62,3 +62,6 @@ Further status information can be shown by running `dmesg`.
 
 [Adapter schematic](https://screenshot.tbspace.de/cmzhjfglbya.png)  
 [Video: Audio CD streaming](https://www.youtube.com/watch?v=cHQhuzSn2oE)
+
+### Credits
+Thanks to [@Toble_Miner](https://github.com/TobleMiner) for a lot of help in the development of this driver!
