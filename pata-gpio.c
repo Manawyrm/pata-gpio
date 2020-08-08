@@ -11,7 +11,6 @@
 #include <scsi/scsi_host.h>
 
 // CS0 High / CS1 Low
-#define REG_CMD		
 #define REG_DATA		0x00
 #define REG_ERROR		0x01
 #define REG_FEATURE		0x01
@@ -27,6 +26,12 @@
 #define REG_ALTSTATUS	0x10
 #define REG_CTL			0x10
 
+// Invalid register cache value
+#define REG_INVALID		0xff
+
+#undef ndelay
+#define ndelay(x)
+
 struct pata_gpio {
 	struct device *dev;
 	struct gpio_descs *databus_gpios;
@@ -35,12 +40,17 @@ struct pata_gpio {
 	struct gpio_descs *address_gpios;
 	struct gpio_desc *strobe_write_gpio;
 	struct gpio_desc *strobe_read_gpio;
+	u8 last_reg;
 };
 
 static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 {
 	int err;
 	unsigned long cs_state = 0b01;
+
+	if (pata->last_reg == reg) {
+		return 0;
+	}
 
 	if (reg & 0xF0)
 		cs_state = 0b10;
@@ -52,23 +62,21 @@ static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
 	if (err)
 		return err;
 
-	return gpiod_set_array_value(pata->address_gpios->ndescs,
+	err = gpiod_set_array_value(pata->address_gpios->ndescs,
 										 pata->address_gpios->desc,
 										 pata->address_gpios->info,
 										 &reg);
+	if (err)
+		return err;
+
+	pata->last_reg = reg;
+
+	return 0;
 }
 
-static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
-{
-	u8 i;
+static int __pata_gpio_read16_no_iocfg(struct pata_gpio *pata, u8 reg, u16 *result) {
 	int err;
 	unsigned long value = 0;
-
-	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
-		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
-		if (err)
-			return err;
-	}
 
 	err = pata_gpio_set_register(pata, reg);
 	if (err)
@@ -88,6 +96,36 @@ static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
 		*result = value;
 
 	return err;
+}
+
+static int pata_gpio_read16(struct pata_gpio *pata, u8 reg, u16 *result)
+{
+	u8 i;
+	int err;
+
+	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
+		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
+		if (err)
+			return err;
+	}
+
+	return __pata_gpio_read16_no_iocfg(pata, reg, result);
+}
+
+static int __pata_gpio_write16_no_iocfg(struct pata_gpio *pata, unsigned long value)
+{
+	int err;
+
+	err = gpiod_set_array_value(pata->databus_gpios->ndescs, pata->databus_gpios->desc, pata->databus_gpios->info, &value);
+	if (err)
+		return err;
+
+	gpiod_set_value(pata->strobe_write_gpio, 1);
+	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	gpiod_set_value(pata->strobe_write_gpio, 0);
+	ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
+
+	return 0;
 }
 
 static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value)
@@ -242,15 +280,43 @@ static unsigned int pata_gpio_data_xfer(struct ata_queued_cmd *qc,
 	unsigned int i;
 	unsigned int words = buflen >> 1;
 	struct ata_port *ap = qc->dev->link->ap;
+	struct pata_gpio *pata = ap->host->private_data;
 	u16 *buf16 = (u16 *) buf;
+	int err;
 
 	/* Transfer multiple of 2 bytes */
-	if (rw == READ)
-		for (i = 0; i < words; i++)
-			buf16[i] = pata_gpio_read16_safe(ap->host->private_data, REG_DATA);
-	else
-		for (i = 0; i < words; i++)
-			pata_gpio_write16_safe(ap->host->private_data, REG_DATA, buf16[i]);
+	if (rw == READ) {
+		buf16[0] = pata_gpio_read16_safe(pata, REG_DATA);
+		for (i = 1; i < words; i++) {
+			err = __pata_gpio_read16_no_iocfg(pata, REG_DATA, &buf16[i]);
+			if (err) {
+				dev_err(ap->dev, "failed to read gpios in %s, code %d\n", __func__, err);
+				BUG();
+			}
+		}
+	} else {
+		err = pata_gpio_set_register(pata, REG_DATA);
+		if (err)
+			return err;
+
+		for (i = 0; i < pata->databus_gpios->ndescs; i++) {
+			err = gpiod_direction_output(pata->databus_gpios->desc[i], 0);
+			if (err)
+				return err;
+		}
+
+		for (i = 0; i < words; i++) {
+			err = __pata_gpio_write16_no_iocfg(pata, buf16[i]);
+			if (err)
+				return err;
+		}
+
+		for (i = 0; i < pata->databus_gpios->ndescs; i++) {
+			err = gpiod_direction_input(pata->databus_gpios->desc[i]);
+			if (err)
+				return err;
+		}
+	}
 
 	/* Transfer trailing 1 byte, if any. */
 	if (unlikely(buflen & 0x01)) {
@@ -259,9 +325,9 @@ static unsigned int pata_gpio_data_xfer(struct ata_queued_cmd *qc,
 		dev_warn(ap->dev, "pata_gpio_data_xfer did uneven length xfer!\n");
 
 		if (rw == READ) {
-			*trailing_buf = pata_gpio_read16_safe(ap->host->private_data, REG_DATA) & 0xFF;
+			*trailing_buf = pata_gpio_read16_safe(pata, REG_DATA) & 0xFF;
 		} else {
-			pata_gpio_write16_safe(ap->host->private_data, REG_DATA, *trailing_buf);
+			pata_gpio_write16_safe(pata, REG_DATA, *trailing_buf);
 		}
 	}
 
@@ -423,6 +489,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	pata->dev = dev;
+	pata->last_reg = REG_INVALID;
 
 	err = claim_gpios(&pata->databus_gpios, 16, "databus", GPIOD_IN, dev);
 	if (err) {
