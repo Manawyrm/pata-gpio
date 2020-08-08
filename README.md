@@ -36,7 +36,7 @@ The following device tree properties are present:
 | `address-gpios` | list of 3 GPIO pins, connected to ATA DA0, DA1 and DA2 in this order  | yes |
 | `strobe-write-gpio`      | GPIO pin, connected to ATA IOW line | yes |
 | `strobe-read-gpio`      | GPIO pin, connected to ATA IOR line | yes |
-| `reset-gpio` | GPIO pin, connected to ATA RESET line | no, but recommended |
+| `reset-gpio` | GPIO pin, connected to ATA RESET line | no |
 
 
 
