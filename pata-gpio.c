@@ -214,6 +214,7 @@ static void pata_gpio_exec_command(struct ata_port *ap,
 static void pata_gpio_tf_load(struct ata_port *ap,
 				const struct ata_taskfile *tf)
 {
+	struct pata_gpio *pata = ap->host->private_data;
 	unsigned int is_addr = tf->flags & ATA_TFLAG_ISADDR;
 
 	if (tf->ctl != ap->last_ctl) {
@@ -223,23 +224,23 @@ static void pata_gpio_tf_load(struct ata_port *ap,
 	}
 
 	if (is_addr && (tf->flags & ATA_TFLAG_LBA48)) {
-		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->hob_feature);
-		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->hob_nsect);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->hob_lbal);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->hob_lbam);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->hob_lbah);
+		pata_gpio_write16_safe(pata, REG_FEATURE, tf->hob_feature);
+		pata_gpio_write16_safe(pata, REG_NSECT, tf->hob_nsect);
+		pata_gpio_write16_safe(pata, REG_LBAL, tf->hob_lbal);
+		pata_gpio_write16_safe(pata, REG_LBAM, tf->hob_lbam);
+		pata_gpio_write16_safe(pata, REG_LBAH, tf->hob_lbah);
 	}
 
 	if (is_addr) {
-		pata_gpio_write16_safe(ap->host->private_data, REG_FEATURE, tf->feature);
-		pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, tf->nsect);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, tf->lbal);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAM, tf->lbam);
-		pata_gpio_write16_safe(ap->host->private_data, REG_LBAH, tf->lbah);
+		pata_gpio_write16_safe(pata, REG_FEATURE, tf->feature);
+		pata_gpio_write16_safe(pata, REG_NSECT, tf->nsect);
+		pata_gpio_write16_safe(pata, REG_LBAL, tf->lbal);
+		pata_gpio_write16_safe(pata, REG_LBAM, tf->lbam);
+		pata_gpio_write16_safe(pata, REG_LBAH, tf->lbah);
 	}
 
 	if (tf->flags & ATA_TFLAG_DEVICE)
-		pata_gpio_write16_safe(ap->host->private_data, REG_DEVICE, tf->device);
+		pata_gpio_write16_safe(pata, REG_DEVICE, tf->device);
 
 	ata_wait_idle(ap);
 }
@@ -249,24 +250,25 @@ static void pata_gpio_tf_load(struct ata_port *ap,
  */
 static void pata_gpio_tf_read(struct ata_port *ap, struct ata_taskfile *tf)
 {
+	struct pata_gpio *pata = ap->host->private_data;
 
-	tf->feature = pata_gpio_read16_safe(ap->host->private_data, REG_FEATURE);
-	tf->nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
-	tf->lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
-	tf->lbam = pata_gpio_read16_safe(ap->host->private_data, REG_LBAM);
-	tf->lbah = pata_gpio_read16_safe(ap->host->private_data, REG_LBAH);
-	tf->device = pata_gpio_read16_safe(ap->host->private_data, REG_DEVICE);
+	tf->feature = pata_gpio_read16_safe(pata, REG_FEATURE);
+	tf->nsect = pata_gpio_read16_safe(pata, REG_NSECT);
+	tf->lbal = pata_gpio_read16_safe(pata, REG_LBAL);
+	tf->lbam = pata_gpio_read16_safe(pata, REG_LBAM);
+	tf->lbah = pata_gpio_read16_safe(pata, REG_LBAH);
+	tf->device = pata_gpio_read16_safe(pata, REG_DEVICE);
 
 	if (tf->flags & ATA_TFLAG_LBA48) {
-		pata_gpio_write16_safe(ap->host->private_data, REG_CTL, tf->ctl | ATA_HOB);
+		pata_gpio_write16_safe(pata, REG_CTL, tf->ctl | ATA_HOB);
 
-		tf->hob_feature = pata_gpio_read16_safe(ap->host->private_data, REG_FEATURE);
-		tf->hob_nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
-		tf->hob_lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
-		tf->hob_lbam = pata_gpio_read16_safe(ap->host->private_data, REG_LBAM);
-		tf->hob_lbah = pata_gpio_read16_safe(ap->host->private_data, REG_LBAH);
+		tf->hob_feature = pata_gpio_read16_safe(pata, REG_FEATURE);
+		tf->hob_nsect = pata_gpio_read16_safe(pata, REG_NSECT);
+		tf->hob_lbal = pata_gpio_read16_safe(pata, REG_LBAL);
+		tf->hob_lbam = pata_gpio_read16_safe(pata, REG_LBAM);
+		tf->hob_lbah = pata_gpio_read16_safe(pata, REG_LBAH);
 
-		pata_gpio_write16_safe(ap->host->private_data, REG_CTL, tf->ctl);
+		pata_gpio_write16_safe(pata, REG_CTL, tf->ctl);
 		ap->last_ctl = tf->ctl;
 	}
 }
@@ -362,21 +364,22 @@ static void pata_gpio_dev_select(struct ata_port *ap, unsigned int device)
 static bool pata_gpio_devchk(struct ata_port *ap,
 				unsigned int device)
 {
+	struct pata_gpio *pata = ap->host->private_data;
 	u8 nsect, lbal;
 
 	pata_gpio_dev_select(ap, device);
 
-	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0x55);
-	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0xAA);
+	pata_gpio_write16_safe(pata, REG_NSECT, 0x55);
+	pata_gpio_write16_safe(pata, REG_LBAL, 0xAA);
 
-	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0xAA);
-	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0x55);
+	pata_gpio_write16_safe(pata, REG_NSECT, 0xAA);
+	pata_gpio_write16_safe(pata, REG_LBAL, 0x55);
 
-	pata_gpio_write16_safe(ap->host->private_data, REG_NSECT, 0x55);
-	pata_gpio_write16_safe(ap->host->private_data, REG_LBAL, 0xAA);
+	pata_gpio_write16_safe(pata, REG_NSECT, 0x55);
+	pata_gpio_write16_safe(pata, REG_LBAL, 0xAA);
 
-	nsect = pata_gpio_read16_safe(ap->host->private_data, REG_NSECT);
-	lbal = pata_gpio_read16_safe(ap->host->private_data, REG_LBAL);
+	nsect = pata_gpio_read16_safe(pata, REG_NSECT);
+	lbal = pata_gpio_read16_safe(pata, REG_LBAL);
 
 	return ((nsect == 0x55) && (lbal == 0xaa));
 }
@@ -408,12 +411,14 @@ static int pata_gpio_wait_after_reset(struct ata_link *link,
 static int pata_gpio_bus_softreset(struct ata_port *ap,
 		unsigned long deadline)
 {
+	struct pata_gpio *pata = ap->host->private_data;
+
 	/* software reset.  causes dev0 to be selected */
-	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl);
+	pata_gpio_write16_safe(pata, REG_CTL, ap->ctl);
 	udelay(20);
-	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl | ATA_SRST);
+	pata_gpio_write16_safe(pata, REG_CTL, ap->ctl | ATA_SRST);
 	udelay(20);
-	pata_gpio_write16_safe(ap->host->private_data, REG_CTL, ap->ctl);
+	pata_gpio_write16_safe(pata, REG_CTL, ap->ctl);
 	ap->last_ctl = ap->ctl;
 
 	return pata_gpio_wait_after_reset(&ap->link, deadline);
