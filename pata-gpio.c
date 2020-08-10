@@ -29,8 +29,11 @@
 // Invalid register cache value
 #define REG_INVALID	0xff
 
-#undef ndelay
-#define ndelay(x)
+#if 0
+#define pata_ndelay(x) ndelay(x)
+#else
+#define pata_ndelay(x)
+#endif
 
 struct pata_gpio {
 	struct device *dev;
@@ -83,7 +86,7 @@ static int __pata_gpio_read16_no_iocfg(struct pata_gpio *pata, u8 reg, u16 *resu
 		return err;
 
 	gpiod_set_value(pata->strobe_read_gpio, 1);
-	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 
 	err = gpiod_get_array_value(pata->databus_gpios->ndescs,
 					pata->databus_gpios->desc,
@@ -121,9 +124,9 @@ static int __pata_gpio_write16_no_iocfg(struct pata_gpio *pata, unsigned long va
 		return err;
 
 	gpiod_set_value(pata->strobe_write_gpio, 1);
-	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 	gpiod_set_value(pata->strobe_write_gpio, 0);
-	ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
+	pata_ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
 
 	return 0;
 }
@@ -144,9 +147,9 @@ static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value
 	}
 
 	gpiod_set_value(pata->strobe_write_gpio, 1);
-	ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
 	gpiod_set_value(pata->strobe_write_gpio, 0);
-	ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
+	pata_ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
