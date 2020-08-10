@@ -44,6 +44,7 @@ struct pata_gpio {
 	struct gpio_desc *strobe_write_gpio;
 	struct gpio_desc *strobe_read_gpio;
 	u8 last_reg;
+	const struct ata_timing *timing;
 };
 
 static int pata_gpio_set_register(struct pata_gpio *pata, unsigned long reg)
@@ -84,9 +85,12 @@ static int __pata_gpio_read16_no_iocfg(struct pata_gpio *pata, u8 reg, u16 *resu
 	err = pata_gpio_set_register(pata, reg);
 	if (err)
 		return err;
+	if (pata->timing)
+		pata_ndelay(pata->timing->setup);
 
 	gpiod_set_value(pata->strobe_read_gpio, 1);
-	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	if (pata->timing)
+		pata_ndelay(pata->timing->act8b);
 
 	err = gpiod_get_array_value(pata->databus_gpios->ndescs,
 					pata->databus_gpios->desc,
@@ -122,11 +126,15 @@ static int __pata_gpio_write16_no_iocfg(struct pata_gpio *pata, unsigned long va
 	err = gpiod_set_array_value(pata->databus_gpios->ndescs, pata->databus_gpios->desc, pata->databus_gpios->info, &value);
 	if (err)
 		return err;
+	if (pata->timing)
+		pata_ndelay(pata->timing->setup);
 
 	gpiod_set_value(pata->strobe_write_gpio, 1);
-	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	if (pata->timing)
+		pata_ndelay(pata->timing->act8b);
 	gpiod_set_value(pata->strobe_write_gpio, 0);
-	pata_ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
+	if (pata->timing)
+		pata_ndelay(pata->timing->rec8b);
 
 	return 0;
 }
@@ -139,6 +147,8 @@ static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value
 	err = pata_gpio_set_register(pata, reg);
 	if (err)
 		return err;
+	if (pata->timing)
+		pata_ndelay(pata->timing->setup);
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_output(pata->databus_gpios->desc[i], (value >> i) & 0x01);
@@ -147,9 +157,11 @@ static int pata_gpio_write16(struct pata_gpio *pata, u8 reg, unsigned long value
 	}
 
 	gpiod_set_value(pata->strobe_write_gpio, 1);
-	pata_ndelay(165); // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOR–/DIOW– pulse width 16-bit"
+	if (pata->timing)
+		pata_ndelay(pata->timing->act8b);
 	gpiod_set_value(pata->strobe_write_gpio, 0);
-	pata_ndelay(30);  // PIO-0 ATA Interface Reference Manual, Rev. C, P. 66 "DIOW– data hold"
+	if (pata->timing)
+		pata_ndelay(pata->timing->rec8b);
 
 	for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 		err = gpiod_direction_input(pata->databus_gpios->desc[i]);
@@ -303,6 +315,8 @@ static unsigned int pata_gpio_data_xfer(struct ata_queued_cmd *qc,
 		err = pata_gpio_set_register(pata, REG_DATA);
 		if (err)
 			return err;
+		if (pata->timing)
+			pata_ndelay(pata->timing->setup);
 
 		for (i = 0; i < pata->databus_gpios->ndescs; i++) {
 			err = gpiod_direction_output(pata->databus_gpios->desc[i], 0);
@@ -472,12 +486,19 @@ static void pata_gpio_drain_fifo(struct ata_queued_cmd *qc)
 	}
 }
 
+void pata_gpio_set_piomode(struct ata_port *ap, struct ata_device *dev) {
+	struct pata_gpio *pata = ap->host->private_data;
+
+	pata->timing = ata_timing_find_mode(dev->pio_mode);
+}
+
 static struct scsi_host_template pata_gpio_sht = {
 	ATA_PIO_SHT("pata-gpio"),
 };
 
 static struct ata_port_operations pata_gpio_port_ops = {
 	.inherits		= &ata_sff_port_ops,
+	.set_piomode		= pata_gpio_set_piomode,
 	.sff_check_status	= pata_gpio_check_status,
 	.sff_check_altstatus	= pata_gpio_check_altstatus,
 	.sff_tf_load		= pata_gpio_tf_load,
@@ -586,7 +607,7 @@ static int pata_gpio_probe(struct platform_device *pdev)
 
 	ap = host->ports[0];
 	ap->ops = &pata_gpio_port_ops;
-	ap->pio_mask = ATA_PIO0;
+	ap->pio_mask = ATA_PIO2; // Limited to PIO2 due to lack of IORDY support
 	ap->flags = ATA_FLAG_SLAVE_POSS;
 	if (!irq)
 		ap->flags |= ATA_FLAG_PIO_POLLING;
