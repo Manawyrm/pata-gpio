@@ -443,6 +443,27 @@ static int pata_gpio_softreset(struct ata_link *link, unsigned int *classes,
 	return 0;
 }
 
+static void pata_gpio_drain_fifo(struct ata_queued_cmd *qc)
+{
+	int count;
+	struct ata_port *ap;
+	struct pata_gpio *pata;
+	u16 scratch;
+
+	/* We only need to flush incoming data when a command was running */
+	if (qc == NULL || qc->dma_dir == DMA_TO_DEVICE)
+		return;
+
+	ap = qc->ap;
+	pata = ap->host->private_data;
+	/* Drain up to 64K of data before we give up this recovery method */
+	if (ap->ops->sff_check_status(ap) & ATA_DRQ) {
+		pata_gpio_read16_safe(pata, REG_DATA);
+		for (count = 2; (ap->ops->sff_check_status(ap) & ATA_DRQ) && count < 65536; count += 2)
+			__pata_gpio_read16_no_iocfg(pata, REG_DATA, &scratch);
+	}
+}
+
 static struct scsi_host_template pata_gpio_sht = {
 	ATA_PIO_SHT("pata-gpio"),
 };
@@ -454,6 +475,7 @@ static struct ata_port_operations pata_gpio_port_ops = {
 	.sff_tf_load		= pata_gpio_tf_load,
 	.sff_tf_read		= pata_gpio_tf_read,
 	.sff_data_xfer		= pata_gpio_data_xfer,
+	.sff_drain_fifo		= pata_gpio_drain_fifo,
 	.sff_exec_command	= pata_gpio_exec_command,
 	.sff_dev_select		= pata_gpio_dev_select,
 	.sff_set_devctl		= pata_gpio_set_devctl,
@@ -478,7 +500,7 @@ static int claim_gpios(struct gpio_descs **target, unsigned count, const char *n
 
 static int pata_gpio_probe(struct platform_device *pdev)
 {
-	int err;
+	int err, irq;
 	struct device *dev = &pdev->dev;
 	struct pata_gpio *pata;
 	struct ata_host *host;
@@ -536,6 +558,16 @@ static int pata_gpio_probe(struct platform_device *pdev)
 		msleep(100);
 	}
 
+	irq = platform_get_irq_optional(pdev, 0);
+	if (!irq || irq == -ENXIO) {
+		dev_warn(dev, "No irq configured, continuing without irq support\n");
+		irq = 0;
+	} else if (irq < 0) {
+		if (irq != -EPROBE_DEFER)
+			dev_err(dev, "Failed to request irq: %d\n", irq);
+		return irq;
+	}
+
 	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host) {
 		dev_err(dev, "failed to allocate ide host\n");
@@ -547,9 +579,11 @@ static int pata_gpio_probe(struct platform_device *pdev)
 	ap = host->ports[0];
 	ap->ops = &pata_gpio_port_ops;
 	ap->pio_mask = ATA_PIO0;
-	ap->flags |= ATA_FLAG_PIO_POLLING | ATA_FLAG_SLAVE_POSS;
+	ap->flags = ATA_FLAG_SLAVE_POSS;
+	if (!irq)
+		ap->flags |= ATA_FLAG_PIO_POLLING;
 
-	return ata_host_activate(host, 0, NULL, 0, &pata_gpio_sht);
+	return ata_host_activate(host, irq, irq ? ata_sff_interrupt : NULL, 0, &pata_gpio_sht);
 }
 
 static const struct of_device_id pata_gpio_dt_ids[] = {

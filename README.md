@@ -38,7 +38,12 @@ The following device tree properties are present:
 | `strobe-read-gpio`      | GPIO pin, connected to ATA IOR line | yes |
 | `reset-gpio` | GPIO pin, connected to ATA RESET line | no |
 
+#### Interrupts
 
+The driver has experimental interrupt support. An example configuration with GPIO interrupts is outlined in
+`atapi-direct-irq.dts`.  
+Interrupts are configured via the generic `interrupts` property. If the `interrupts` property is not specified
+the driver falls back to polling.
 
 ### Compiling
 
