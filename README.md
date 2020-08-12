@@ -66,8 +66,9 @@ Further status information can be shown by running `dmesg`.
 ### Additional info
 
 [Adapter schematic](https://screenshot.tbspace.de/cmzhjfglbya.png)  
-[Adapter PCB](https://github.com/Manawyrm/ATAPIHat-SMI)
-[Video: Audio CD streaming](https://www.youtube.com/watch?v=cHQhuzSn2oE)
+[Adapter PCB](https://github.com/Manawyrm/ATAPIHat-SMI)  
+[Video: Audio CD streaming](https://www.youtube.com/watch?v=cHQhuzSn2oE)  
+[Twitter: Project presentation](https://twitter.com/Manawyrm/status/1292084926980984833)  
 
 ### Credits
 Thanks to [@Toble_Miner](https://github.com/TobleMiner) for a lot of help in the development of this driver!
