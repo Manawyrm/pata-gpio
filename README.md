@@ -65,8 +65,10 @@ Further status information can be shown by running `dmesg`.
 
 ### Additional info
 
-[Adapter schematic](https://screenshot.tbspace.de/cmzhjfglbya.png)  
 [Adapter PCB](https://github.com/Manawyrm/ATAPIHat-SMI)  
+[Adapter schematic](https://github.com/Manawyrm/ATAPIHat-SMI/blob/master/gerbers/RevA/ATAPIHat-SMI/ATAPIHat-SMI.pdf)  
+
+[Older schematic (not SMI-ready)](https://screenshot.tbspace.de/cmzhjfglbya.png)  
 [Video: Audio CD streaming](https://www.youtube.com/watch?v=cHQhuzSn2oE)  
 [Twitter: Project presentation](https://twitter.com/Manawyrm/status/1292084926980984833)  
 
