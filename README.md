@@ -66,6 +66,7 @@ Further status information can be shown by running `dmesg`.
 ### Additional info
 
 [Adapter schematic](https://screenshot.tbspace.de/cmzhjfglbya.png)  
+[Adapter PCB](https://github.com/Manawyrm/ATAPIHat-SMI)
 [Video: Audio CD streaming](https://www.youtube.com/watch?v=cHQhuzSn2oE)
 
 ### Credits
